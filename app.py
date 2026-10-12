@@ -11,6 +11,8 @@ import math
 import yt_dlp as youtube_dl
 from pptx import Presentation
 from pptx.util import Inches
+from pptx.util import Pt
+from pptx.dml.color import RGBColor
 
 TESSERACT_WINDOWS_PATH = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 
@@ -156,8 +158,18 @@ def extract_text_from_slides(slides):
 def create_ppt(slide_texts):
     prs = Presentation()
     
-    for slide_filename, text in slide_texts:
+    for idx, (slide_filename, text) in enumerate(slide_texts, start=1):
         slide = prs.slides.add_slide(prs.slide_layouts[5])  # Use a blank slide layout
+        number_box = slide.shapes.add_textbox(Inches(0.3), Inches(0.2), Inches(1.4), Inches(0.35))
+        number_frame = number_box.text_frame
+        number_frame.clear()
+        number_paragraph = number_frame.paragraphs[0]
+        number_run = number_paragraph.add_run()
+        number_run.text = f"Slide {idx}"
+        number_run.font.size = Pt(13)
+        number_run.font.bold = True
+        number_run.font.color.rgb = RGBColor(70, 70, 70)
+
         left = top = Inches(1)
         slide.shapes.add_picture(slide_filename, left, top, width=Inches(8.5), height=Inches(6))
         txBox = slide.shapes.add_textbox(Inches(1), Inches(6.5), Inches(8.5), Inches(1))
@@ -204,27 +216,97 @@ def process_video(video_path, sample_interval_seconds, max_samples, max_slides):
     return slide_texts, ppt_filename
 
 
-def render_results(slide_texts, ppt_filename):
-    st.success("Processing complete!")
-    st.write("Extracted Slides and Text:")
+def inject_custom_styles():
+    st.markdown(
+        """
+        <style>
+        .block-container {
+            padding-top: 2rem;
+        }
 
-    for slide_filename, text in slide_texts:
-        st.image(slide_filename, caption="Slide Image", use_column_width=True)
-        st.write("Extracted Text:")
-        st.text(text)
-        st.write("---")
+        .slide-card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 0.75rem;
+            margin-bottom: 0.6rem;
+        }
+
+        .slide-number {
+            font-weight: 700;
+            font-size: 1rem;
+        }
+
+        .slide-meta {
+            color: rgba(128, 128, 128, 0.95);
+            font-size: 0.85rem;
+        }
+
+        div[data-testid="stDownloadButton"] button {
+            width: 100%;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_results(slide_texts, ppt_filename):
+    total_slides = len(slide_texts)
+    slides_with_text = sum(1 for _, text in slide_texts if text)
+
+    st.success("Processing complete!")
+
+    summary_col_1, summary_col_2, summary_col_3 = st.columns([1, 1, 1.4])
+    summary_col_1.metric("Slides generated", total_slides)
+    summary_col_2.metric("Slides with OCR text", slides_with_text)
 
     with open(ppt_filename, "rb") as f:
-        st.download_button(
+        summary_col_3.download_button(
             "Download PowerPoint Presentation",
             f,
             file_name="presentation.pptx",
+            use_container_width=True,
         )
+
+    st.subheader("Generated Slides")
+
+    for start_index in range(0, total_slides, 2):
+        columns = st.columns(2)
+
+        for column_offset, column in enumerate(columns):
+            slide_index = start_index + column_offset
+            if slide_index >= total_slides:
+                continue
+
+            slide_number = slide_index + 1
+            slide_filename, text = slide_texts[slide_index]
+            text_label = "OCR text found" if text else "No OCR text found"
+
+            with column:
+                with st.container(border=True):
+                    st.markdown(
+                        f"""
+                        <div class="slide-card-header">
+                            <span class="slide-number">Slide {slide_number}</span>
+                            <span class="slide-meta">{text_label}</span>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+                    st.image(slide_filename, use_container_width=True)
+
+                    with st.expander(f"View OCR text for Slide {slide_number}", expanded=False):
+                        if text:
+                            st.text(text)
+                        else:
+                            st.caption("No readable text was detected for this slide.")
 
 
 # Streamlit Interface
 def main():
     st.set_page_config(page_title="Video Slide Extractor", layout="wide")
+    inject_custom_styles()
     st.title("YouTube and Local Video Slide Extractor")
     st.write("Enter a YouTube video link or upload a video file. This app extracts unique slides, runs OCR, and creates a PowerPoint presentation.")
 
