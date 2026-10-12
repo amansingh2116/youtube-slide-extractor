@@ -194,11 +194,27 @@ After processing, the app shows a generated slide gallery.
 Each slide card includes:
 
 - Slide number.
+- Slide selection checkbox.
 - Slide image.
 - OCR status.
 - **Run OCR** or **Re-run OCR** button.
 - Expandable OCR text area when text exists.
 - Copy button for OCR text.
+
+### Download Slide Images
+
+The results gallery includes image export controls above the slides.
+
+Use **Download all slide images** to download every generated slide image as a ZIP file.
+
+Use the slide checkboxes to select only the slides you want, then click **Download selected images**.
+
+The ZIP files include:
+
+- `slide_001.png`, `slide_002.png`, etc.
+- `slide_001_ocr.txt`, etc. when that slide has OCR text.
+
+Use **Select all slides** to mark every slide, or **Clear selection** to reset the checkboxes.
 
 ### Per-Slide OCR
 

@@ -11,6 +11,7 @@ This Streamlit app converts presentation-style videos into a numbered slide gall
 - **Manual frame-area crop**: crop every sampled frame before slide detection and OCR, useful for fixed toolbars, camera overlays, borders, or side panels.
 - **Duplicate slide filtering**: uses perceptual hashing to keep visually distinct slide frames.
 - **Numbered slide gallery**: generated slides are displayed as numbered cards.
+- **Slide image export**: select individual slides or download all generated slide images as a ZIP.
 - **Optional OCR**: run OCR during processing or skip it for faster slide extraction.
 - **Per-slide OCR**: run or re-run OCR for any individual slide from the results gallery.
 - **Copy OCR text**: copy recognized text for each slide that has OCR output.
@@ -93,9 +94,10 @@ Then open the local Streamlit URL shown in the terminal.
 6. Use the preview frame to choose the video time range and visual crop.
 7. Extract slides from the loaded video.
 8. Review the generated numbered slide gallery.
-9. Run or re-run OCR for any slide if needed.
-10. Copy OCR text from individual slides.
-11. Download the generated PowerPoint.
+9. Select slides and download selected/all slide images if needed.
+10. Run or re-run OCR for any slide if needed.
+11. Copy OCR text from individual slides.
+12. Download the generated PowerPoint.
 
 See [USAGE.md](USAGE.md) for the full workflow and setting details.
 

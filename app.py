@@ -11,6 +11,8 @@ import math
 import json
 import numpy as np
 import base64
+import zipfile
+import io
 import urllib.parse
 import urllib.request
 import urllib.error
@@ -591,6 +593,24 @@ def copy_text_button(text, button_label, key):
     )
 
 
+def create_slide_images_zip(slide_texts, selected_indexes=None):
+    selected_set = set(selected_indexes) if selected_indexes is not None else None
+    zip_buffer = io.BytesIO()
+
+    with zipfile.ZipFile(zip_buffer, "w", compression=zipfile.ZIP_DEFLATED) as zip_file:
+        for index, (slide_filename, text) in enumerate(slide_texts):
+            if selected_set is not None and index not in selected_set:
+                continue
+
+            slide_number = index + 1
+            zip_file.write(slide_filename, f"slide_{slide_number:03d}.png")
+            if text:
+                zip_file.writestr(f"slide_{slide_number:03d}_ocr.txt", text)
+
+    zip_buffer.seek(0)
+    return zip_buffer
+
+
 def store_slide_results(slide_texts, ppt_filename, use_ocr, ocr_settings):
     st.session_state["slide_results"] = {
         "slide_texts": slide_texts,
@@ -830,6 +850,46 @@ def render_results(slide_texts, ppt_filename, use_ocr, ocr_settings):
         )
 
     st.subheader("Generated Slides")
+    selection_prefix = f"slide_select_{total_slides}"
+    selected_indexes = [
+        index for index in range(total_slides)
+        if st.session_state.get(f"{selection_prefix}_{index}", False)
+    ]
+
+    action_col_1, action_col_2, action_col_3, action_col_4 = st.columns([1, 1, 1.2, 1.6])
+
+    if action_col_1.button("Select all slides", use_container_width=True):
+        for index in range(total_slides):
+            st.session_state[f"{selection_prefix}_{index}"] = True
+        st.rerun()
+
+    if action_col_2.button("Clear selection", use_container_width=True):
+        for index in range(total_slides):
+            st.session_state[f"{selection_prefix}_{index}"] = False
+        st.rerun()
+
+    action_col_3.download_button(
+        "Download all slide images",
+        create_slide_images_zip(slide_texts),
+        file_name="all_slide_images.zip",
+        mime="application/zip",
+        use_container_width=True,
+    )
+
+    if selected_indexes:
+        action_col_4.download_button(
+            f"Download selected images ({len(selected_indexes)})",
+            create_slide_images_zip(slide_texts, selected_indexes),
+            file_name="selected_slide_images.zip",
+            mime="application/zip",
+            use_container_width=True,
+        )
+    else:
+        action_col_4.button(
+            "Download selected images",
+            disabled=True,
+            use_container_width=True,
+        )
 
     for start_index in range(0, total_slides, 2):
         columns = st.columns(2)
@@ -856,6 +916,10 @@ def render_results(slide_texts, ppt_filename, use_ocr, ocr_settings):
                         </div>
                         """,
                         unsafe_allow_html=True,
+                    )
+                    st.checkbox(
+                        f"Select Slide {slide_number}",
+                        key=f"{selection_prefix}_{slide_index}",
                     )
                     st.image(slide_filename, use_container_width=True)
 
