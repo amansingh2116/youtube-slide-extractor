@@ -1,69 +1,106 @@
+# YouTube and Local Video Slide Extractor
 
-# YouTube Video Slide Extractor with Text Recognition and PowerPoint Export
+This Streamlit app converts presentation-style videos into a numbered slide gallery and downloadable PowerPoint file. It supports both YouTube links and local video uploads, samples frames from the video, removes near-duplicate slides, optionally runs OCR, and lets you OCR or re-OCR individual slides after processing.
 
-This Streamlit app converts YouTube videos into PowerPoint presentations by extracting unique slides, applying Optical Character Recognition (OCR) to detect text, and generating a downloadable PowerPoint (.pptx) file. It’s designed for educators, students, professionals, or anyone who needs to quickly convert video content into organized, text-annotated slides.
+## Features
 
-## Key Features
-- **YouTube Video Download**: Provide a YouTube URL to download the video in the best available quality.
-- **Frame Extraction**: Extract frames at regular intervals to capture key slides or visuals.
-- **Unique Slide Detection**: Filters out duplicate frames using perceptual hashing to ensure only unique slides are included.
-- **Text Recognition (OCR)**: Extracts text from the slides using Tesseract OCR.
-- **PowerPoint Export**: Generates a PowerPoint presentation with slides and recognized text, ready for download.
+- **Two input modes**: process a YouTube URL or upload a local video file.
+- **Per-tab settings**: YouTube and local upload each have their own processing controls.
+- **Efficient frame sampling**: checks frames at configurable time intervals instead of reading every frame.
+- **Duplicate slide filtering**: uses perceptual hashing to keep visually distinct slide frames.
+- **Numbered slide gallery**: generated slides are displayed as numbered cards.
+- **Optional OCR**: run OCR during processing or skip it for faster slide extraction.
+- **Per-slide OCR**: run or re-run OCR for any individual slide from the results gallery.
+- **Copy OCR text**: copy recognized text for each slide that has OCR output.
+- **Improved OCR preprocessing**: crops to the likely slide canvas, removes screen-recording noise, upscales the image, and tries multiple Tesseract modes.
+- **OCR.space support**: optional cloud OCR mode inspired by Copyfish/OCR.space workflows.
+- **PowerPoint export**: downloads a `.pptx` with slide numbers and OCR text when available.
 
 ## Tech Stack
-- **Python**: For backend processing.
-- **Streamlit**: For the user interface.
-- **OpenCV** and **PIL**: For video processing and frame extraction.
-- **imagehash**: For perceptual hashing to detect unique slides.
-- **pytesseract**: For Optical Character Recognition (OCR) to extract text from slides.
-- **python-pptx**: To generate PowerPoint files.
-- **yt-dlp**: To download videos from YouTube.
+
+- **Streamlit** for the web UI.
+- **OpenCV** for video reading and image processing.
+- **Pillow** for image conversion and saving.
+- **imagehash** for perceptual duplicate detection.
+- **pytesseract** for local OCR.
+- **OCR.space API** for optional cloud OCR.
+- **yt-dlp** for YouTube downloads.
+- **python-pptx** for PowerPoint generation.
 
 ## Installation
 
-### 1. Clone the Repository
+1. Clone the repository:
+
 ```bash
 git clone git@github.com:Adityakeshav/youtube-slide-extractor.git
 cd youtube-slide-extractor
 ```
 
-### 2. Install Required Dependencies
-Ensure Python 3.7+ is installed, then install the necessary packages:
+2. Install Python dependencies:
+
 ```bash
 pip install -r requirements.txt
 ```
 
-### 3. Install Tesseract OCR
-You’ll need Tesseract OCR for text recognition. Follow the installation instructions for your OS:
+3. Install Tesseract OCR for local OCR:
 
-- **Windows**: Download from [Tesseract OCR's official repository](https://github.com/tesseract-ocr/tesseract).
-- **Linux**: Install via package manager:
-  ```bash
-  sudo apt install tesseract-ocr
-  ```
-- **macOS**: Use Homebrew:
-  ```bash
-  brew install tesseract
-  ```
+- Windows: install Tesseract OCR and make sure it is available at `C:\Program Files\Tesseract-OCR\tesseract.exe` or on your `PATH`.
+- Linux:
 
-Ensure Tesseract is added to your system’s PATH.
+```bash
+sudo apt install tesseract-ocr
+```
 
-## Usage
+- macOS:
 
-1. Run the Streamlit app:
-    ```bash
-    streamlit run app.py
-    ```
+```bash
+brew install tesseract
+```
 
-2. Open the app in your browser. You will see a text input field to enter a YouTube video URL.
+4. Optional: set an OCR.space API key for cloud OCR:
 
-3. Enter the URL of the YouTube video you wish to convert into a PowerPoint.
+```bash
+set OCR_SPACE_API_KEY=your_api_key_here
+```
 
-4. Click **Process Video**. The app will download the video, extract frames, detect unique slides, apply OCR to extract text, and create a PowerPoint file.
+On macOS/Linux:
 
-5. After processing, you can review the slides and text extracted. You can then download the PowerPoint file directly from the app.
+```bash
+export OCR_SPACE_API_KEY=your_api_key_here
+```
 
-## Example Use Cases
-- **Educational Content**: Convert video lectures into PowerPoint slides.
-- **Meeting Summaries**: Extract key points from recorded webinars or meetings and compile them into presentations.
-- **Content Archiving**: Save slides from tutorials or presentations in a structured format.
+You can also paste the key directly into the app when using OCR.space cloud mode.
+
+## Running the App
+
+```bash
+streamlit run app.py
+```
+
+Then open the local Streamlit URL shown in the terminal.
+
+## Quick Usage
+
+1. Choose **YouTube URL** or **Local video upload**.
+2. Adjust processing settings on that tab.
+3. Choose whether to run OCR during processing.
+4. Choose an OCR method:
+   - **Enhanced local Tesseract** for offline OCR.
+   - **OCR.space cloud** for optional cloud OCR engines.
+5. Process the video.
+6. Review the generated numbered slide gallery.
+7. Run or re-run OCR for any slide if needed.
+8. Copy OCR text from individual slides.
+9. Download the generated PowerPoint.
+
+See [USAGE.md](USAGE.md) for the full workflow and setting details.
+
+## How It Works
+
+The app first downloads or saves the input video to a temporary file. It reads video metadata such as FPS, frame count, and duration, then samples frames by timestamp. The number of sampled frames is controlled by **Sample every N seconds** and **Maximum frames to check**.
+
+After sampling, each frame is converted to a perceptual hash. Frames that are too visually similar to previous frames are skipped, leaving only unique slide-like frames.
+
+When OCR is enabled, the app crops each slide image to the likely presentation canvas before OCR. This avoids reading toolbar text, taskbar text, presenter bubbles, and other screen-recording noise. Local OCR uses Tesseract with multiple preprocessing and page-segmentation modes, then keeps the result with the strongest text score. Cloud OCR uses OCR.space when selected.
+
+The final results are stored in Streamlit session state so you can run per-slide OCR buttons without losing the generated slide gallery. A PowerPoint file is generated from the slide images and OCR text.
