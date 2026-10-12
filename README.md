@@ -8,8 +8,9 @@ This Streamlit app converts presentation-style videos into a numbered slide gall
 - **Five-video queue**: load up to five videos and process them one after another.
 - **Per-video settings**: each loaded video has independent processing, crop, OCR, and result controls.
 - **Efficient frame sampling**: checks frames at configurable time intervals instead of reading every frame.
-- **Video time range selection**: process only a selected part of a video.
-- **Manual frame-area crop**: crop every sampled frame before slide detection and OCR, useful for fixed toolbars, camera overlays, borders, or side panels.
+- **Visual video time range selection**: drag a two-handle range bar to process only a selected part of a video.
+- **Visual frame-area crop**: drag horizontal and vertical crop range sliders while watching a real preview frame before slide detection and OCR, useful for fixed toolbars, camera overlays, borders, or side panels.
+- **Manual slide extractor**: open a separate capture panel, scrub through the video, add any exact frame as a slide, or download it as a PNG.
 - **Duplicate slide filtering**: uses perceptual hashing to keep visually distinct slide frames.
 - **Numbered slide gallery**: generated slides are displayed as numbered cards.
 - **Slide image export**: select individual slides or download all generated slide images as a ZIP.
@@ -93,20 +94,21 @@ Then open the local Streamlit URL shown in the terminal.
 6. Choose an OCR method:
    - **Enhanced local Tesseract** for offline OCR.
    - **OCR.space cloud** for optional cloud OCR engines.
-7. Use the preview frame to choose the video time range and visual crop.
-8. Extract slides from the selected video.
-9. Review the generated numbered slide gallery.
-10. Select slides and download selected/all slide images if needed.
-11. Run or re-run OCR for any slide if needed.
-12. Copy OCR text from individual slides.
-13. Download the generated PowerPoint.
-14. Select another loaded video and repeat.
+7. Use the preview frame, crop handles, and time range bar to choose exactly what part of the video should be processed.
+8. Optionally open **Manual slide extractor** to scrub to an exact timestamp, capture that frame manually as a slide, or download it as an image.
+9. Extract slides from the selected video.
+10. Review the generated numbered slide gallery.
+11. Select slides and download selected/all slide images if needed.
+12. Run or re-run OCR for any slide if needed.
+13. Copy OCR text from individual slides.
+14. Download the generated PowerPoint.
+15. Select another loaded video and repeat.
 
 See [USAGE.md](USAGE.md) for the full workflow and setting details.
 
 ## How It Works
 
-The app first downloads or saves each input video to a persistent temporary file and adds it to the loaded-video queue. After you choose a video from the queue, it reads video metadata such as FPS, frame count, and duration, then shows a real preview frame. You can use that preview to choose the start/end time range and crop the frame area visually before slide extraction begins.
+The app first downloads or saves each input video to a persistent temporary file and adds it to the loaded-video queue. After you choose a video from the queue, it reads video metadata such as FPS, frame count, and duration, then shows a real preview frame. You can use that preview to move through the selected time range, drag a two-handle range bar for the clip section, drag horizontal and vertical crop range sliders for the frame area, and manually capture exact frames from a separate extractor panel before or after automatic extraction.
 
 When extraction starts, the app samples frames by timestamp. The number of sampled frames is controlled by **Sample every N seconds**, **Maximum frames to check**, and the optional start/end time range.
 

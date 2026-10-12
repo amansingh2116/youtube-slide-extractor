@@ -123,6 +123,15 @@ def safe_file_label(label):
     return cleaned_label[:80] or "video"
 
 
+def format_timestamp(total_seconds):
+    total_seconds = max(0, int(round(total_seconds)))
+    minutes, seconds = divmod(total_seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"{hours}:{minutes:02d}:{seconds:02d}"
+    return f"{minutes}:{seconds:02d}"
+
+
 def get_active_video_job():
     jobs = get_video_jobs()
     if not jobs:
@@ -189,6 +198,30 @@ def apply_frame_crop(frame, crop_settings=None):
     return frame[top:bottom, left:right]
 
 
+def draw_crop_overlay(frame, crop_settings=None):
+    if not crop_settings or not crop_settings.get("enabled"):
+        return frame
+
+    height, width = frame.shape[:2]
+    left = int(width * crop_settings.get("left", 0) / 100)
+    right = int(width * crop_settings.get("right", 100) / 100)
+    top = int(height * crop_settings.get("top", 0) / 100)
+    bottom = int(height * crop_settings.get("bottom", 100) / 100)
+
+    left = max(0, min(left, width - 1))
+    right = max(left + 1, min(right, width))
+    top = max(0, min(top, height - 1))
+    bottom = max(top + 1, min(bottom, height))
+
+    overlay = frame.copy()
+    shaded = frame.copy()
+    shaded[:] = (25, 25, 25)
+    overlay = cv2.addWeighted(shaded, 0.45, overlay, 0.55, 0)
+    overlay[top:bottom, left:right] = frame[top:bottom, left:right]
+    cv2.rectangle(overlay, (left, top), (right - 1, bottom - 1), (0, 76, 255), 3)
+    return overlay
+
+
 # Function to extract frames from the video at specific intervals
 def extract_frames(
     video_path,
@@ -206,8 +239,12 @@ def extract_frames(
     fps, frame_count, duration_seconds = get_video_metadata(cap)
     frames = []
     start_time_seconds = max(0, start_time_seconds or 0)
-    if end_time_seconds and end_time_seconds > start_time_seconds:
+    if end_time_seconds is not None:
         end_time_seconds = min(end_time_seconds, duration_seconds) if duration_seconds else end_time_seconds
+        if end_time_seconds <= start_time_seconds:
+            st.error("The selected video time range is empty. Move the end handle after the start handle.")
+            cap.release()
+            return []
     else:
         end_time_seconds = duration_seconds if duration_seconds else None
 
@@ -497,6 +534,21 @@ def extract_text_from_slide_file(slide_filename, ocr_settings=None):
         return ""
 
 
+def save_slide_frame(frame):
+    pil_image = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+    slide_image = tempfile.NamedTemporaryFile(suffix='.png', delete=False)
+    pil_image.save(slide_image.name)
+    return slide_image.name, pil_image
+
+
+def frame_to_png_bytes(frame):
+    pil_image = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+    image_buffer = io.BytesIO()
+    pil_image.save(image_buffer, format="PNG")
+    image_buffer.seek(0)
+    return image_buffer
+
+
 # Function to create a PowerPoint presentation from slides
 def create_ppt(slide_texts, use_ocr=True):
     prs = Presentation()
@@ -678,12 +730,58 @@ def store_slide_results(job_id, slide_texts, ppt_filename, use_ocr, ocr_settings
     if "slide_results_by_job" not in st.session_state:
         st.session_state["slide_results_by_job"] = {}
 
+    existing_results = st.session_state["slide_results_by_job"].get(job_id, {})
+    manual_slide_texts = existing_results.get("manual_slide_texts", [])
+    combined_slide_texts = slide_texts + manual_slide_texts
+    results_use_ocr = use_ocr or any(text for _, text in combined_slide_texts)
+    if manual_slide_texts:
+        ppt_filename = create_ppt(combined_slide_texts, use_ocr=results_use_ocr)
+
     st.session_state["slide_results_by_job"][job_id] = {
-        "slide_texts": slide_texts,
+        "slide_texts": combined_slide_texts,
+        "auto_slide_texts": slide_texts,
+        "manual_slide_texts": manual_slide_texts,
         "ppt_filename": ppt_filename,
-        "use_ocr": use_ocr,
+        "use_ocr": results_use_ocr,
         "ocr_settings": ocr_settings,
     }
+
+
+def append_manual_slide(job_id, frame, use_ocr, ocr_settings):
+    slide_filename, pil_image = save_slide_frame(frame)
+    extracted_text = ""
+
+    if use_ocr:
+        extracted_text = run_ocr_on_image(pil_image, ocr_settings) or ""
+
+    if "slide_results_by_job" not in st.session_state:
+        st.session_state["slide_results_by_job"] = {}
+
+    results_by_job = st.session_state["slide_results_by_job"]
+    active_results = results_by_job.get(job_id)
+    if active_results:
+        manual_slide_texts = active_results.get("manual_slide_texts", [])
+        manual_slide_texts.append((slide_filename, extracted_text))
+        slide_texts = active_results["slide_texts"] + [(slide_filename, extracted_text)]
+        ppt_use_ocr = active_results.get("use_ocr", False) or use_ocr or any(
+            text for _, text in slide_texts
+        )
+    else:
+        slide_texts = [(slide_filename, extracted_text)]
+        manual_slide_texts = [(slide_filename, extracted_text)]
+        ppt_use_ocr = use_ocr
+        active_results = {}
+
+    active_results.update(
+        {
+            "slide_texts": slide_texts,
+            "manual_slide_texts": manual_slide_texts,
+            "ppt_filename": create_ppt(slide_texts, use_ocr=ppt_use_ocr),
+            "use_ocr": ppt_use_ocr,
+            "ocr_settings": ocr_settings,
+        }
+    )
+    results_by_job[job_id] = active_results
 
 
 def render_processing_controls(prefix):
@@ -770,43 +868,45 @@ def render_video_crop_controls(prefix, video_path, ocr_settings):
         return 0, None, {"enabled": False}, ocr_settings
 
     duration_minutes = duration_seconds / 60
+    duration_minutes_float = float(duration_minutes)
+    minute_step = 0.25 if duration_minutes >= 1 else 0.05
+    preview_step_seconds = 1.0 if duration_seconds >= 60 else 0.25
 
     with st.container(border=True):
-        st.subheader("Video Range and Crop Preview")
+        st.subheader("Visual Crop and Time Range")
         st.caption(
             f"Loaded video: {duration_minutes:.1f} minutes, "
             f"{frame_count:,} frames, {fps:.2f} fps."
         )
 
-        range_col_1, range_col_2, range_col_3 = st.columns(3)
-        start_minutes = range_col_1.number_input(
-            "Start time (minutes)",
-            min_value=0.0,
-            max_value=float(duration_minutes),
-            value=0.0,
-            step=0.5,
-            key=f"{prefix}_start_minutes",
-            help="Slides before this timestamp are ignored.",
-        )
-        end_minutes = range_col_2.number_input(
-            "End time (minutes, 0 = end of video)",
-            min_value=0.0,
-            max_value=float(duration_minutes),
-            value=0.0,
-            step=0.5,
-            key=f"{prefix}_end_minutes",
-            help="Use 0 to process until the video ends.",
-        )
+        time_range_key = f"{prefix}_time_range"
+        saved_time_range = st.session_state.get(time_range_key, (0.0, duration_minutes_float))
+        if not isinstance(saved_time_range, (list, tuple)) or len(saved_time_range) != 2:
+            saved_time_range = (0.0, duration_minutes_float)
+        start_minutes = max(0.0, min(float(saved_time_range[0]), duration_minutes_float))
+        end_minutes = max(start_minutes, min(float(saved_time_range[1]), duration_minutes_float))
 
-        preview_max_minutes = end_minutes if end_minutes > start_minutes else duration_minutes
-        preview_minutes = range_col_3.slider(
-            "Preview frame at minute",
-            min_value=float(start_minutes),
-            max_value=float(max(start_minutes, preview_max_minutes)),
-            value=float(start_minutes),
-            step=0.25,
-            key=f"{prefix}_preview_minutes",
+        preview_min_seconds = start_minutes * 60 if end_minutes > start_minutes else 0.0
+        preview_max_seconds = end_minutes * 60 if end_minutes > start_minutes else duration_seconds
+        last_preview_key = f"{prefix}_last_preview_seconds"
+        preview_key = (
+            f"{prefix}_preview_seconds_"
+            f"{int(round(preview_min_seconds))}_{int(round(preview_max_seconds))}"
         )
+        saved_preview_seconds = float(st.session_state.get(last_preview_key, preview_min_seconds))
+        saved_preview_seconds = max(preview_min_seconds, min(saved_preview_seconds, preview_max_seconds))
+
+        preview_seconds = st.slider(
+            "Preview and capture time (seconds)",
+            min_value=float(preview_min_seconds),
+            max_value=float(preview_max_seconds),
+            value=float(saved_preview_seconds),
+            step=preview_step_seconds,
+            key=preview_key,
+            help="Move this to inspect the exact frame you are using for crop adjustments.",
+        )
+        st.session_state[last_preview_key] = preview_seconds
+        st.caption(f"Current frame: {format_timestamp(preview_seconds)}")
 
         frame_crop_enabled = st.checkbox(
             "Crop frame area before slide detection and OCR",
@@ -814,42 +914,33 @@ def render_video_crop_controls(prefix, video_path, ocr_settings):
             key=f"{prefix}_frame_crop_enabled",
             help="Use this when the video has a fixed toolbar, presenter camera, black border, or side panel.",
         )
-        crop_col_1, crop_col_2, crop_col_3, crop_col_4 = st.columns(4)
-        crop_left = crop_col_1.slider(
-            "Left %",
+
+        crop_col_1, crop_col_2 = st.columns(2)
+        horizontal_crop = crop_col_1.slider(
+            "Horizontal crop range",
             min_value=0,
-            max_value=90,
-            value=0,
-            step=1,
-            disabled=not frame_crop_enabled,
-            key=f"{prefix}_crop_left",
-        )
-        crop_right = crop_col_2.slider(
-            "Right %",
-            min_value=10,
             max_value=100,
-            value=100,
+            value=(0, 100),
             step=1,
             disabled=not frame_crop_enabled,
-            key=f"{prefix}_crop_right",
+            key=f"{prefix}_crop_x_range",
+            help="Drag the two handles inward to remove left or right screen noise.",
         )
-        crop_top = crop_col_3.slider(
-            "Top %",
+        vertical_crop = crop_col_2.slider(
+            "Vertical crop range",
             min_value=0,
-            max_value=90,
-            value=0,
-            step=1,
-            disabled=not frame_crop_enabled,
-            key=f"{prefix}_crop_top",
-        )
-        crop_bottom = crop_col_4.slider(
-            "Bottom %",
-            min_value=10,
             max_value=100,
-            value=100,
+            value=(0, 100),
             step=1,
             disabled=not frame_crop_enabled,
-            key=f"{prefix}_crop_bottom",
+            key=f"{prefix}_crop_y_range",
+            help="Drag the two handles inward to remove top or bottom screen noise.",
+        )
+        crop_left, crop_right = horizontal_crop
+        crop_top, crop_bottom = vertical_crop
+        st.caption(
+            f"Crop bounds: left {crop_left}%, right {crop_right}%, "
+            f"top {crop_top}%, bottom {crop_bottom}%."
         )
 
         if frame_crop_enabled and (crop_left >= crop_right or crop_top >= crop_bottom):
@@ -863,21 +954,6 @@ def render_video_crop_controls(prefix, video_path, ocr_settings):
             "bottom": crop_bottom,
         }
 
-        preview_frame = get_video_frame_at_time(video_path, preview_minutes * 60)
-        if preview_frame is not None:
-            preview_col_1, preview_col_2 = st.columns(2)
-            preview_col_1.image(
-                cv2.cvtColor(preview_frame, cv2.COLOR_BGR2RGB),
-                caption="Original preview frame",
-                use_container_width=True,
-            )
-            cropped_preview = apply_frame_crop(preview_frame, frame_crop_settings)
-            preview_col_2.image(
-                cv2.cvtColor(cropped_preview, cv2.COLOR_BGR2RGB),
-                caption="Frame that will be used for slide detection and OCR",
-                use_container_width=True,
-            )
-
         ocr_crop_label = st.selectbox(
             "OCR crop behavior",
             ["Auto-detect slide canvas", "Use generated slide as-is"],
@@ -886,10 +962,131 @@ def render_video_crop_controls(prefix, video_path, ocr_settings):
         )
         ocr_settings["crop_mode"] = "manual" if ocr_crop_label == "Use generated slide as-is" else "auto"
 
+        preview_frame = get_video_frame_at_time(video_path, preview_seconds)
+        if preview_frame is not None:
+            cropped_preview = apply_frame_crop(preview_frame, frame_crop_settings)
+            preview_col_1, preview_col_2 = st.columns(2)
+            preview_col_1.image(
+                cv2.cvtColor(draw_crop_overlay(preview_frame, frame_crop_settings), cv2.COLOR_BGR2RGB),
+                caption="Preview frame with crop box",
+                width="stretch",
+            )
+            preview_col_2.image(
+                cv2.cvtColor(cropped_preview, cv2.COLOR_BGR2RGB),
+                caption="Frame used for slide detection and OCR",
+                width="stretch",
+            )
+
+        time_range = st.slider(
+            "Video time range to extract",
+            min_value=0.0,
+            max_value=duration_minutes_float,
+            value=(start_minutes, end_minutes),
+            step=minute_step,
+            key=time_range_key,
+            help="Drag the handles to choose the part of the video used for sampling, OCR, and export.",
+        )
+        start_minutes, end_minutes = float(time_range[0]), float(time_range[1])
+        st.caption(
+            f"Selected range: {format_timestamp(start_minutes * 60)} to "
+            f"{format_timestamp(end_minutes * 60)}."
+        )
+        if end_minutes <= start_minutes:
+            st.warning("Move the end handle after the start handle before extracting slides.")
+
     start_time_seconds = start_minutes * 60
-    end_time_seconds = end_minutes * 60 if end_minutes > start_minutes else None
+    end_time_seconds = end_minutes * 60
 
     return start_time_seconds, end_time_seconds, frame_crop_settings, ocr_settings
+
+
+def render_manual_slide_extractor(
+    prefix,
+    job_id,
+    video_path,
+    job_label,
+    use_ocr,
+    ocr_settings,
+    start_time_seconds,
+    end_time_seconds,
+    frame_crop_settings,
+):
+    fps, frame_count, duration_seconds = get_video_metadata_from_path(video_path)
+    if duration_seconds <= 0:
+        return
+
+    range_start_seconds = max(0.0, float(start_time_seconds or 0.0))
+    range_end_seconds = float(end_time_seconds or duration_seconds)
+    range_end_seconds = min(max(range_end_seconds, range_start_seconds), duration_seconds)
+    if range_end_seconds <= range_start_seconds:
+        range_start_seconds = 0.0
+        range_end_seconds = duration_seconds
+
+    step_seconds = 1.0 if duration_seconds >= 60 else 0.25
+    last_manual_key = f"{prefix}_manual_last_seconds"
+    manual_key = (
+        f"{prefix}_manual_capture_seconds_"
+        f"{int(round(range_start_seconds))}_{int(round(range_end_seconds))}"
+    )
+    saved_seconds = float(st.session_state.get(last_manual_key, range_start_seconds))
+    saved_seconds = max(range_start_seconds, min(saved_seconds, range_end_seconds))
+
+    panel_label = "Manual slide extractor"
+    if hasattr(st, "popover"):
+        panel = st.popover(panel_label, icon=":material/video_library:")
+    else:
+        panel = st.expander(panel_label, expanded=False)
+
+    with panel:
+        st.caption(
+            "Scrub through the current video range, preview the cropped frame, "
+            "then capture it as a slide or download it as an image."
+        )
+        capture_seconds = st.slider(
+            "Video position",
+            min_value=float(range_start_seconds),
+            max_value=float(range_end_seconds),
+            value=float(saved_seconds),
+            step=step_seconds,
+            key=manual_key,
+            help="Choose the exact timestamp to preview and capture.",
+        )
+        st.session_state[last_manual_key] = capture_seconds
+        st.caption(f"Current frame: {format_timestamp(capture_seconds)}")
+
+        frame = get_video_frame_at_time(video_path, capture_seconds)
+        if frame is None:
+            st.warning("Could not read a frame at this timestamp.")
+            return
+
+        captured_frame = apply_frame_crop(frame, frame_crop_settings)
+        st.image(
+            cv2.cvtColor(captured_frame, cv2.COLOR_BGR2RGB),
+            caption="Manual capture preview",
+            width="stretch",
+        )
+
+        file_label = safe_file_label(job_label)
+        timestamp_label = format_timestamp(capture_seconds).replace(":", "-")
+        button_col_1, button_col_2 = st.columns(2)
+
+        if button_col_1.button(
+            "Add frame to slides",
+            key=f"{prefix}_manual_add_slide",
+            width="stretch",
+        ):
+            with st.spinner("Saving captured slide..."):
+                append_manual_slide(job_id, captured_frame, use_ocr, ocr_settings)
+            st.success(f"Captured slide at {format_timestamp(capture_seconds)}.")
+            st.rerun()
+
+        button_col_2.download_button(
+            "Download frame image",
+            frame_to_png_bytes(captured_frame),
+            file_name=f"{file_label}_frame_{timestamp_label}.png",
+            mime="image/png",
+            width="stretch",
+        )
 
 
 def render_results(job_id, job_label, slide_texts, ppt_filename, use_ocr, ocr_settings):
@@ -913,7 +1110,7 @@ def render_results(job_id, job_label, slide_texts, ppt_filename, use_ocr, ocr_se
             "Download PowerPoint Presentation",
             f,
             file_name=f"{file_label}_presentation.pptx",
-            use_container_width=True,
+            width="stretch",
         )
 
     st.subheader("Generated Slides")
@@ -925,12 +1122,12 @@ def render_results(job_id, job_label, slide_texts, ppt_filename, use_ocr, ocr_se
 
     action_col_1, action_col_2, action_col_3, action_col_4 = st.columns([1, 1, 1.2, 1.6])
 
-    if action_col_1.button("Select all slides", use_container_width=True):
+    if action_col_1.button("Select all slides", width="stretch"):
         for index in range(total_slides):
             st.session_state[f"{selection_prefix}_{index}"] = True
         st.rerun()
 
-    if action_col_2.button("Clear selection", use_container_width=True):
+    if action_col_2.button("Clear selection", width="stretch"):
         for index in range(total_slides):
             st.session_state[f"{selection_prefix}_{index}"] = False
         st.rerun()
@@ -940,7 +1137,7 @@ def render_results(job_id, job_label, slide_texts, ppt_filename, use_ocr, ocr_se
         create_slide_images_zip(slide_texts),
         file_name=f"{file_label}_all_slide_images.zip",
         mime="application/zip",
-        use_container_width=True,
+        width="stretch",
     )
 
     if selected_indexes:
@@ -949,13 +1146,13 @@ def render_results(job_id, job_label, slide_texts, ppt_filename, use_ocr, ocr_se
             create_slide_images_zip(slide_texts, selected_indexes),
             file_name=f"{file_label}_selected_slide_images.zip",
             mime="application/zip",
-            use_container_width=True,
+            width="stretch",
         )
     else:
         action_col_4.button(
             "Download selected images",
             disabled=True,
-            use_container_width=True,
+            width="stretch",
         )
 
     for start_index in range(0, total_slides, 2):
@@ -988,7 +1185,7 @@ def render_results(job_id, job_label, slide_texts, ppt_filename, use_ocr, ocr_se
                         f"Select Slide {slide_number}",
                         key=f"{selection_prefix}_{slide_index}",
                     )
-                    st.image(slide_filename, use_container_width=True)
+                    st.image(slide_filename, width="stretch")
 
                     ocr_button_label = (
                         f"Re-run OCR for Slide {slide_number}"
@@ -997,7 +1194,7 @@ def render_results(job_id, job_label, slide_texts, ppt_filename, use_ocr, ocr_se
                     if st.button(
                         ocr_button_label,
                         key=f"run_ocr_slide_{job_id}_{slide_number}",
-                        use_container_width=True,
+                        width="stretch",
                     ):
                         with st.spinner(f"Running OCR for Slide {slide_number}..."):
                             extracted_text = extract_text_from_slide_file(slide_filename, ocr_settings)
@@ -1005,16 +1202,23 @@ def render_results(job_id, job_label, slide_texts, ppt_filename, use_ocr, ocr_se
                         if extracted_text is None:
                             st.error("Tesseract OCR is not available on this machine.")
                         else:
-                            st.session_state["slide_results_by_job"][job_id]["slide_texts"][slide_index] = (
-                                slide_filename,
-                                extracted_text,
-                            )
-                            updated_slide_texts = st.session_state["slide_results_by_job"][job_id]["slide_texts"]
-                            st.session_state["slide_results_by_job"][job_id]["ppt_filename"] = create_ppt(
+                            active_job_results = st.session_state["slide_results_by_job"][job_id]
+                            active_job_results["slide_texts"][slide_index] = (slide_filename, extracted_text)
+                            manual_slide_texts = active_job_results.get("manual_slide_texts", [])
+                            for manual_index, (manual_filename, _) in enumerate(manual_slide_texts):
+                                if manual_filename == slide_filename:
+                                    manual_slide_texts[manual_index] = (slide_filename, extracted_text)
+                                    break
+                            active_job_results["manual_slide_texts"] = manual_slide_texts
+                            updated_slide_texts = active_job_results["slide_texts"]
+                            active_job_results["ppt_filename"] = create_ppt(
                                 updated_slide_texts,
                                 use_ocr=use_ocr or any(
                                     item_text for _, item_text in updated_slide_texts
                                 ),
+                            )
+                            active_job_results["use_ocr"] = use_ocr or any(
+                                item_text for _, item_text in updated_slide_texts
                             )
                             st.rerun()
 
@@ -1123,12 +1327,12 @@ def main():
         [job["id"] for job in jobs],
         format_func=lambda job_id: job_labels[job_id],
         index=[job["id"] for job in jobs].index(active_job["id"]),
-        key="active_video_job_id",
     )
+    st.session_state["active_video_job_id"] = selected_job_id
     active_job = next(job for job in jobs if job["id"] == selected_job_id)
 
     queue_col_1, queue_col_2 = st.columns([1, 3])
-    if queue_col_1.button("Remove selected video", use_container_width=True):
+    if queue_col_1.button("Remove selected video", width="stretch"):
         remove_video_job(active_job["id"])
         st.rerun()
     queue_col_2.caption(f"{len(jobs)} of {MAX_VIDEO_JOBS} videos loaded.")
@@ -1148,6 +1352,18 @@ def main():
         frame_crop_settings,
         ocr_settings,
     ) = render_video_crop_controls(job_prefix, active_job["path"], ocr_settings)
+
+    render_manual_slide_extractor(
+        job_prefix,
+        active_job["id"],
+        active_job["path"],
+        active_job["label"],
+        use_ocr,
+        ocr_settings,
+        start_time_seconds,
+        end_time_seconds,
+        frame_crop_settings,
+    )
 
     if st.button("Extract slides from selected video", type="primary"):
         slide_texts, ppt_filename = process_video(

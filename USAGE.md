@@ -90,14 +90,38 @@ When disabled, the app extracts the slides faster. You can still run OCR later o
 
 These controls appear after you choose a loaded video. They use a real frame from that selected video, so you can visually choose the crop area before extraction starts.
 
-### Start and End Time
+### Manual Slide Extractor
 
-Use these controls to process only part of a video.
+Open **Manual slide extractor** to scrub through the selected video separately from the automatic crop preview. The app shows the frame at that timestamp and applies the current crop settings to the preview.
 
-- **Start time (minutes)** ignores everything before that timestamp.
-- **End time (minutes, 0 = end of video)** stops processing after that timestamp.
+Use the manual extractor to:
 
-This is useful when:
+- move through the video with the **Video position** slider
+- preview the cropped frame at that point
+- add the current frame to the selected video's slide gallery and PowerPoint
+- download the current frame directly as a PNG image
+
+Manual capture is useful when:
+
+- the automatic sampler misses an important slide
+- a slide appears only briefly
+- you want to create a slide deck from hand-picked frames
+- you want to test crop and OCR settings on one frame before processing the full video
+
+If **Run OCR during processing** is enabled, the captured frame also runs OCR immediately. If OCR is disabled, the slide is added without text and you can run OCR later from that slide card.
+
+### Video Time Range Bar
+
+Use the **Video time range to extract** bar to process only part of a video.
+
+The bar has two handles:
+
+- the left handle is the start time
+- the right handle is the end time
+
+Everything outside that selected range is ignored during slide extraction, duplicate detection, OCR, and PowerPoint export.
+
+This range is useful when:
 
 - The lecture has a long intro.
 - You only need one topic/chapter.
@@ -105,10 +129,10 @@ This is useful when:
 
 Example:
 
-- Start time: `10`
-- End time: `25`
+- Drag the left handle to `10:00`.
+- Drag the right handle to `25:00`.
 
-The app only samples frames between minute 10 and minute 25. The preview frame slider also follows this selected range.
+The app only samples frames between minute 10 and minute 25. The manual slide extractor also follows this selected range.
 
 ### Crop Frame Area Before Slide Detection and OCR
 
@@ -121,21 +145,19 @@ The crop is applied before:
 - OCR
 - PowerPoint export
 
-Use the percentage sliders:
+Use the crop range sliders:
 
-- **Left %** removes content from the left edge.
-- **Right %** keeps content up to that percentage from the left.
-- **Top %** removes content from the top edge.
-- **Bottom %** keeps content up to that percentage from the top.
+- **Horizontal crop range** has two handles for the left and right edges.
+- **Vertical crop range** has two handles for the top and bottom edges.
 
-For example, if a presenter camera is always on the right side, reduce **Right %** until the presenter camera is outside the cropped frame.
+For example, if a presenter camera is always on the right side, drag the right handle of **Horizontal crop range** inward until the presenter camera is outside the cropped frame.
 
 The app shows:
 
-- the original preview frame
+- the original preview frame with the crop box drawn on top
 - the cropped frame that will be used for slide detection and OCR
 
-Adjust the crop sliders until the cropped preview contains the slide area you want.
+Adjust the crop handles until the cropped preview contains the slide area you want.
 
 This is useful for videos with:
 
