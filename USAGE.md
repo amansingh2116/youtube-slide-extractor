@@ -19,20 +19,24 @@ Open the local URL Streamlit prints in the terminal.
 Use this tab when the source video is on YouTube.
 
 1. Open the **YouTube URL** tab.
-2. Configure the processing settings on the page.
+2. Configure the processing and OCR settings on the page.
 3. Paste a complete YouTube URL.
-4. Click **Download and extract slides**.
+4. Click **Download video**.
+5. After the video loads, use the preview frame to set the time range and crop.
+6. Click **Extract slides from downloaded video**.
 
-The app downloads the video with `yt-dlp`, saves it temporarily, and processes that file.
+The app downloads the video with `yt-dlp`, saves it temporarily, then shows preview controls before processing.
 
 ### Local Video Upload
 
 Use this tab when the video file is already on your computer.
 
 1. Open the **Local video upload** tab.
-2. Configure the processing settings on the page.
+2. Configure the processing and OCR settings on the page.
 3. Choose a video file from your computer.
-4. Click **Extract slides from upload**.
+4. Click **Load uploaded video**.
+5. After the video loads, use the preview frame to set the time range and crop.
+6. Click **Extract slides from loaded video**.
 
 Supported upload extensions are `mp4`, `mov`, `mkv`, `avi`, and `webm`.
 
@@ -68,6 +72,86 @@ When enabled, OCR runs on every detected unique slide during the main processing
 
 When disabled, the app extracts the slides faster. You can still run OCR later on individual slides from the generated gallery.
 
+## Advanced Crop and Time Range
+
+These controls appear after a YouTube video is downloaded or a local video is loaded. They use a real frame from that video, so you can visually choose the crop area before extraction starts.
+
+### Start and End Time
+
+Use these controls to process only part of a video.
+
+- **Start time (minutes)** ignores everything before that timestamp.
+- **End time (minutes, 0 = end of video)** stops processing after that timestamp.
+
+This is useful when:
+
+- The lecture has a long intro.
+- You only need one topic/chapter.
+- You want to test settings on a short section before processing the full video.
+
+Example:
+
+- Start time: `10`
+- End time: `25`
+
+The app only samples frames between minute 10 and minute 25. The preview frame slider also follows this selected range.
+
+### Crop Frame Area Before Slide Detection and OCR
+
+Enable this when the slide is always in the same area of the video frame.
+
+The crop is applied before:
+
+- duplicate slide detection
+- generated slide gallery
+- OCR
+- PowerPoint export
+
+Use the percentage sliders:
+
+- **Left %** removes content from the left edge.
+- **Right %** keeps content up to that percentage from the left.
+- **Top %** removes content from the top edge.
+- **Bottom %** keeps content up to that percentage from the top.
+
+For example, if a presenter camera is always on the right side, reduce **Right %** until the presenter camera is outside the cropped frame.
+
+The app shows:
+
+- the original preview frame
+- the cropped frame that will be used for slide detection and OCR
+
+Adjust the crop sliders until the cropped preview contains the slide area you want.
+
+This is useful for videos with:
+
+- PDF/browser toolbars
+- Windows or macOS taskbars
+- presenter camera bubbles
+- black borders
+- side panels
+- chat windows
+- fixed watermarks or overlays
+
+### OCR Crop Behavior
+
+This controls what image OCR receives.
+
+Use **Auto-detect slide canvas** when:
+
+- the full sampled frame still contains toolbar/taskbar/presenter noise
+- you did not manually crop the frame
+- the slide is surrounded by screen-recording UI
+
+Use **Use generated slide as-is** when:
+
+- you already used the manual frame crop to isolate the slide
+- auto-crop cuts off useful slide content
+- the slide background is not white
+- the video uses a non-standard slide layout
+
+This setting is important because not every video has the same layout. Auto-crop is helpful for many lecture recordings, but manual crop plus generated-slide OCR is more reliable when the layout is unusual.
+
 ## OCR Methods
 
 ### Enhanced Local Tesseract
@@ -84,6 +168,8 @@ Before sending an image to Tesseract, the app:
 6. Scores the OCR outputs and keeps the best-looking result.
 
 This mode works offline once Tesseract is installed.
+
+If auto-crop does not work for a specific video, enable manual frame cropping and set OCR crop behavior to **Use generated slide as-is**.
 
 ### OCR.space Cloud
 
@@ -168,10 +254,24 @@ For fast-moving lectures, try `5` or `10` seconds.
 Try these in order:
 
 1. Click **Re-run OCR** for that specific slide.
-2. Switch OCR method to **OCR.space cloud**.
-3. Use **Engine 3 - best accuracy**.
-4. Enable **Table/list mode** for contents pages or tabular slides.
-5. Use a personal OCR.space API key for more reliable cloud results.
+2. Load the video and use the preview frame controls.
+3. Enable **Crop frame area before slide detection and OCR** and crop out fixed UI noise.
+4. Set **OCR crop behavior** to **Use generated slide as-is**.
+5. Re-run OCR for that slide.
+6. Switch OCR method to **OCR.space cloud**.
+7. Use **Engine 3 - best accuracy**.
+8. Enable **Table/list mode** for contents pages or tabular slides.
+9. Use a personal OCR.space API key for more reliable cloud results.
+
+### Auto-Crop Cuts Off Slide Content
+
+Switch **OCR crop behavior** to **Use generated slide as-is**.
+
+If the generated slide still includes too much noise, enable manual frame crop and adjust the crop percentages until the generated slide itself looks clean.
+
+### Only Need Part of the Video
+
+Use **Start time** and **End time** in **Advanced crop and time range**. This reduces processing time and avoids extracting slides from irrelevant sections.
 
 ### Local OCR Does Not Work
 

@@ -38,6 +38,7 @@ DEFAULT_OCR_SETTINGS = {
     "engine": "3",
     "language": "auto",
     "is_table": False,
+    "crop_mode": "auto",
 }
 
 
@@ -77,8 +78,61 @@ def get_video_metadata(cap):
     return fps, frame_count, duration_seconds
 
 
+def get_video_metadata_from_path(video_path):
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        return 0, 0, 0
+
+    metadata = get_video_metadata(cap)
+    cap.release()
+    return metadata
+
+
+def get_video_frame_at_time(video_path, time_seconds):
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        return None
+
+    fps, frame_count, _ = get_video_metadata(cap)
+    cap.set(cv2.CAP_PROP_POS_MSEC, max(0, time_seconds) * 1000)
+    ret, frame = cap.read()
+
+    if not ret and fps > 0 and frame_count > 0:
+        target_frame = min(int(time_seconds * fps), frame_count - 1)
+        cap.set(cv2.CAP_PROP_POS_FRAMES, target_frame)
+        ret, frame = cap.read()
+
+    cap.release()
+    return frame if ret else None
+
+
+def apply_frame_crop(frame, crop_settings=None):
+    if not crop_settings or not crop_settings.get("enabled"):
+        return frame
+
+    height, width = frame.shape[:2]
+    left = int(width * crop_settings.get("left", 0) / 100)
+    right = int(width * crop_settings.get("right", 100) / 100)
+    top = int(height * crop_settings.get("top", 0) / 100)
+    bottom = int(height * crop_settings.get("bottom", 100) / 100)
+
+    left = max(0, min(left, width - 1))
+    right = max(left + 1, min(right, width))
+    top = max(0, min(top, height - 1))
+    bottom = max(top + 1, min(bottom, height))
+
+    return frame[top:bottom, left:right]
+
+
 # Function to extract frames from the video at specific intervals
-def extract_frames(video_path, sample_interval_seconds=5, max_samples=400):
+def extract_frames(
+    video_path,
+    sample_interval_seconds=5,
+    max_samples=400,
+    start_time_seconds=0,
+    end_time_seconds=None,
+    frame_crop_settings=None,
+):
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         st.error("Could not open the video file. Please try another video.")
@@ -86,6 +140,11 @@ def extract_frames(video_path, sample_interval_seconds=5, max_samples=400):
 
     fps, frame_count, duration_seconds = get_video_metadata(cap)
     frames = []
+    start_time_seconds = max(0, start_time_seconds or 0)
+    if end_time_seconds and end_time_seconds > start_time_seconds:
+        end_time_seconds = min(end_time_seconds, duration_seconds) if duration_seconds else end_time_seconds
+    else:
+        end_time_seconds = duration_seconds if duration_seconds else None
 
     if fps <= 0 or frame_count <= 0:
         frame_interval = 150
@@ -96,23 +155,32 @@ def extract_frames(video_path, sample_interval_seconds=5, max_samples=400):
             if not ret:
                 break
             if frame_id % frame_interval == 0:
-                frames.append(frame)
+                frames.append(apply_frame_crop(frame, frame_crop_settings))
             frame_id += 1
 
         cap.release()
         return frames
 
-    frame_step = max(1, int(fps * sample_interval_seconds))
-    sample_count = min(max_samples, math.ceil(duration_seconds / sample_interval_seconds))
+    selected_duration = max(0, (end_time_seconds or duration_seconds) - start_time_seconds)
+    sample_count = min(max_samples, math.ceil(selected_duration / sample_interval_seconds))
+    if sample_count <= 0:
+        cap.release()
+        return []
+
     st.caption(
         f"Video length: {duration_seconds / 60:.1f} minutes. "
+        f"Selected range: {start_time_seconds / 60:.1f}-{(end_time_seconds or duration_seconds) / 60:.1f} minutes. "
         f"Checking {sample_count} sampled frame(s)."
     )
     progress = st.progress(0)
 
     for sample_index in range(sample_count):
-        target_msec = sample_index * sample_interval_seconds * 1000
-        target_frame = min(sample_index * frame_step, frame_count - 1)
+        target_seconds = start_time_seconds + (sample_index * sample_interval_seconds)
+        if end_time_seconds and target_seconds > end_time_seconds:
+            break
+
+        target_msec = target_seconds * 1000
+        target_frame = min(int(target_seconds * fps), frame_count - 1)
 
         cap.set(cv2.CAP_PROP_POS_MSEC, target_msec)
         ret, frame = cap.read()
@@ -122,7 +190,7 @@ def extract_frames(video_path, sample_interval_seconds=5, max_samples=400):
             ret, frame = cap.read()
 
         if ret:
-            frames.append(frame)
+            frames.append(apply_frame_crop(frame, frame_crop_settings))
 
         progress.progress((sample_index + 1) / sample_count)
 
@@ -199,9 +267,17 @@ def crop_to_slide_region(pil_image):
     return pil_image.crop((left, top, right, bottom)).convert("RGB")
 
 
-def prepare_image_for_ocr(pil_image):
-    cropped_image = crop_to_slide_region(pil_image)
-    image = np.array(cropped_image)
+def get_ocr_source_image(pil_image, ocr_settings=None):
+    settings = {**DEFAULT_OCR_SETTINGS, **(ocr_settings or {})}
+    if settings.get("crop_mode") == "manual":
+        return pil_image.convert("RGB")
+
+    return crop_to_slide_region(pil_image)
+
+
+def prepare_image_for_ocr(pil_image, ocr_settings=None):
+    source_image = get_ocr_source_image(pil_image, ocr_settings)
+    image = np.array(source_image)
     gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
 
     scale = max(2.0, min(4.0, 1800 / max(gray.shape[1], 1)))
@@ -223,16 +299,16 @@ def score_ocr_text(text):
     return readable_chars + (long_words * 8) - noise_penalty
 
 
-def run_local_tesseract_ocr(pil_image):
+def run_local_tesseract_ocr(pil_image, ocr_settings=None):
     if not is_tesseract_available():
         return None
 
-    cropped_image = crop_to_slide_region(pil_image)
-    prepared_image = prepare_image_for_ocr(cropped_image)
+    source_image = get_ocr_source_image(pil_image, ocr_settings)
+    prepared_image = prepare_image_for_ocr(pil_image, ocr_settings)
     local_variants = [
         prepared_image,
-        cropped_image.convert("L").resize(
-            (cropped_image.width * 2, cropped_image.height * 2),
+        source_image.convert("L").resize(
+            (source_image.width * 2, source_image.height * 2),
             Image.Resampling.LANCZOS,
         ),
     ]
@@ -254,8 +330,8 @@ def run_local_tesseract_ocr(pil_image):
     return max(results, key=score_ocr_text, default="")
 
 
-def image_to_base64_payload(pil_image):
-    cropped_image = crop_to_slide_region(pil_image)
+def image_to_base64_payload(pil_image, ocr_settings=None):
+    cropped_image = get_ocr_source_image(pil_image, ocr_settings)
     max_width = 2200
 
     if cropped_image.width > max_width:
@@ -279,7 +355,7 @@ def run_ocr_space_ocr(pil_image, ocr_settings):
 
     data = urllib.parse.urlencode(
         {
-            "base64Image": image_to_base64_payload(pil_image),
+            "base64Image": image_to_base64_payload(pil_image, ocr_settings),
             "language": language,
             "OCREngine": engine,
             "scale": "true",
@@ -323,7 +399,7 @@ def run_ocr_on_image(pil_image, ocr_settings=None):
         if text:
             return text
 
-    return run_local_tesseract_ocr(pil_image)
+    return run_local_tesseract_ocr(pil_image, settings)
 
 
 # Function to extract text from each unique slide
@@ -387,12 +463,25 @@ def create_ppt(slide_texts, use_ocr=True):
     return ppt_temp.name
 
 
-def process_video(video_path, sample_interval_seconds, max_samples, max_slides, use_ocr, ocr_settings):
+def process_video(
+    video_path,
+    sample_interval_seconds,
+    max_samples,
+    max_slides,
+    use_ocr,
+    ocr_settings,
+    start_time_seconds,
+    end_time_seconds,
+    frame_crop_settings,
+):
     with st.spinner("Extracting frames..."):
         frames = extract_frames(
             video_path,
             sample_interval_seconds=sample_interval_seconds,
             max_samples=max_samples,
+            start_time_seconds=start_time_seconds,
+            end_time_seconds=end_time_seconds,
+            frame_crop_settings=frame_crop_settings,
         )
 
     if not frames:
@@ -588,6 +677,135 @@ def render_processing_controls(prefix):
     return sample_interval_seconds, max_samples, max_slides, use_ocr, ocr_settings
 
 
+def render_video_crop_controls(prefix, video_path, ocr_settings):
+    fps, frame_count, duration_seconds = get_video_metadata_from_path(video_path)
+    if duration_seconds <= 0:
+        st.error("Could not read video duration for crop preview.")
+        return 0, None, {"enabled": False}, ocr_settings
+
+    duration_minutes = duration_seconds / 60
+
+    with st.container(border=True):
+        st.subheader("Video Range and Crop Preview")
+        st.caption(
+            f"Loaded video: {duration_minutes:.1f} minutes, "
+            f"{frame_count:,} frames, {fps:.2f} fps."
+        )
+
+        range_col_1, range_col_2, range_col_3 = st.columns(3)
+        start_minutes = range_col_1.number_input(
+            "Start time (minutes)",
+            min_value=0.0,
+            max_value=float(duration_minutes),
+            value=0.0,
+            step=0.5,
+            key=f"{prefix}_start_minutes",
+            help="Slides before this timestamp are ignored.",
+        )
+        end_minutes = range_col_2.number_input(
+            "End time (minutes, 0 = end of video)",
+            min_value=0.0,
+            max_value=float(duration_minutes),
+            value=0.0,
+            step=0.5,
+            key=f"{prefix}_end_minutes",
+            help="Use 0 to process until the video ends.",
+        )
+
+        preview_max_minutes = end_minutes if end_minutes > start_minutes else duration_minutes
+        preview_minutes = range_col_3.slider(
+            "Preview frame at minute",
+            min_value=float(start_minutes),
+            max_value=float(max(start_minutes, preview_max_minutes)),
+            value=float(start_minutes),
+            step=0.25,
+            key=f"{prefix}_preview_minutes",
+        )
+
+        frame_crop_enabled = st.checkbox(
+            "Crop frame area before slide detection and OCR",
+            value=False,
+            key=f"{prefix}_frame_crop_enabled",
+            help="Use this when the video has a fixed toolbar, presenter camera, black border, or side panel.",
+        )
+        crop_col_1, crop_col_2, crop_col_3, crop_col_4 = st.columns(4)
+        crop_left = crop_col_1.slider(
+            "Left %",
+            min_value=0,
+            max_value=90,
+            value=0,
+            step=1,
+            disabled=not frame_crop_enabled,
+            key=f"{prefix}_crop_left",
+        )
+        crop_right = crop_col_2.slider(
+            "Right %",
+            min_value=10,
+            max_value=100,
+            value=100,
+            step=1,
+            disabled=not frame_crop_enabled,
+            key=f"{prefix}_crop_right",
+        )
+        crop_top = crop_col_3.slider(
+            "Top %",
+            min_value=0,
+            max_value=90,
+            value=0,
+            step=1,
+            disabled=not frame_crop_enabled,
+            key=f"{prefix}_crop_top",
+        )
+        crop_bottom = crop_col_4.slider(
+            "Bottom %",
+            min_value=10,
+            max_value=100,
+            value=100,
+            step=1,
+            disabled=not frame_crop_enabled,
+            key=f"{prefix}_crop_bottom",
+        )
+
+        if frame_crop_enabled and (crop_left >= crop_right or crop_top >= crop_bottom):
+            st.warning("Crop bounds must leave a visible frame area.")
+
+        frame_crop_settings = {
+            "enabled": frame_crop_enabled and crop_left < crop_right and crop_top < crop_bottom,
+            "left": crop_left,
+            "right": crop_right,
+            "top": crop_top,
+            "bottom": crop_bottom,
+        }
+
+        preview_frame = get_video_frame_at_time(video_path, preview_minutes * 60)
+        if preview_frame is not None:
+            preview_col_1, preview_col_2 = st.columns(2)
+            preview_col_1.image(
+                cv2.cvtColor(preview_frame, cv2.COLOR_BGR2RGB),
+                caption="Original preview frame",
+                use_container_width=True,
+            )
+            cropped_preview = apply_frame_crop(preview_frame, frame_crop_settings)
+            preview_col_2.image(
+                cv2.cvtColor(cropped_preview, cv2.COLOR_BGR2RGB),
+                caption="Frame that will be used for slide detection and OCR",
+                use_container_width=True,
+            )
+
+        ocr_crop_label = st.selectbox(
+            "OCR crop behavior",
+            ["Auto-detect slide canvas", "Use generated slide as-is"],
+            key=f"{prefix}_ocr_crop_mode",
+            help="Use generated slide as-is after manually cropping the frame to the slide area.",
+        )
+        ocr_settings["crop_mode"] = "manual" if ocr_crop_label == "Use generated slide as-is" else "auto"
+
+    start_time_seconds = start_minutes * 60
+    end_time_seconds = end_minutes * 60 if end_minutes > start_minutes else None
+
+    return start_time_seconds, end_time_seconds, frame_crop_settings, ocr_settings
+
+
 def render_results(slide_texts, ppt_filename, use_ocr, ocr_settings):
     total_slides = len(slide_texts)
     slides_with_text = sum(1 for _, text in slide_texts if text)
@@ -701,30 +919,51 @@ def main():
         ) = render_processing_controls("youtube")
         youtube_url = st.text_input("YouTube Video URL", "")
 
-        if st.button("Download and extract slides", type="primary"):
+        if st.button("Download video", type="primary"):
             if not youtube_url.strip():
                 st.error("Please enter a YouTube video URL.")
                 return
 
-            with tempfile.TemporaryDirectory() as temp_dir:
-                temp_video_path = os.path.join(temp_dir, "video.mp4")
+            video_temp = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False)
+            video_temp.close()
+            os.remove(video_temp.name)
 
-                with st.spinner("Downloading video..."):
-                    video_path = download_video(youtube_url.strip(), output_path=temp_video_path)
-                    if not video_path:
-                        return
+            with st.spinner("Downloading video..."):
+                video_path = download_video(youtube_url.strip(), output_path=video_temp.name)
+                if not video_path:
+                    return
 
+            st.session_state["youtube_video"] = {
+                "path": video_path,
+                "source": youtube_url.strip(),
+            }
+            st.session_state.pop("slide_results", None)
+
+        youtube_video = st.session_state.get("youtube_video")
+        if youtube_video:
+            st.success("Video downloaded. Adjust the preview crop/time range, then extract slides.")
+            (
+                start_time_seconds,
+                end_time_seconds,
+                frame_crop_settings,
+                ocr_settings,
+            ) = render_video_crop_controls("youtube", youtube_video["path"], ocr_settings)
+
+            if st.button("Extract slides from downloaded video", type="primary"):
                 slide_texts, ppt_filename = process_video(
-                    video_path,
+                    youtube_video["path"],
                     sample_interval_seconds,
                     max_samples,
                     max_slides,
                     use_ocr,
                     ocr_settings,
+                    start_time_seconds,
+                    end_time_seconds,
+                    frame_crop_settings,
                 )
 
-            if slide_texts and ppt_filename:
-                store_slide_results(slide_texts, ppt_filename, use_ocr, ocr_settings)
+                if slide_texts and ppt_filename:
+                    store_slide_results(slide_texts, ppt_filename, use_ocr, ocr_settings)
 
     with upload_tab:
         (
@@ -739,27 +978,47 @@ def main():
             type=["mp4", "mov", "mkv", "avi", "webm"],
         )
 
-        if st.button("Extract slides from upload", type="primary"):
+        if st.button("Load uploaded video", type="primary"):
             if uploaded_file is None:
                 st.error("Please choose a local video file first.")
                 return
 
-            with tempfile.TemporaryDirectory() as temp_dir:
-                extension = os.path.splitext(uploaded_file.name)[1] or ".mp4"
-                temp_video_path = os.path.join(temp_dir, f"uploaded_video{extension}")
-                video_path = save_uploaded_video(uploaded_file, temp_video_path)
+            extension = os.path.splitext(uploaded_file.name)[1] or ".mp4"
+            video_temp = tempfile.NamedTemporaryFile(suffix=extension, delete=False)
+            video_temp.close()
+            video_path = save_uploaded_video(uploaded_file, video_temp.name)
 
+            st.session_state["upload_video"] = {
+                "path": video_path,
+                "source": uploaded_file.name,
+            }
+            st.session_state.pop("slide_results", None)
+
+        upload_video = st.session_state.get("upload_video")
+        if upload_video:
+            st.success("Video loaded. Adjust the preview crop/time range, then extract slides.")
+            (
+                start_time_seconds,
+                end_time_seconds,
+                frame_crop_settings,
+                ocr_settings,
+            ) = render_video_crop_controls("upload", upload_video["path"], ocr_settings)
+
+            if st.button("Extract slides from loaded video", type="primary"):
                 slide_texts, ppt_filename = process_video(
-                    video_path,
+                    upload_video["path"],
                     sample_interval_seconds,
                     max_samples,
                     max_slides,
                     use_ocr,
                     ocr_settings,
+                    start_time_seconds,
+                    end_time_seconds,
+                    frame_crop_settings,
                 )
 
-            if slide_texts and ppt_filename:
-                store_slide_results(slide_texts, ppt_filename, use_ocr, ocr_settings)
+                if slide_texts and ppt_filename:
+                    store_slide_results(slide_texts, ppt_filename, use_ocr, ocr_settings)
 
     if "slide_results" in st.session_state:
         render_results(

@@ -7,6 +7,8 @@ This Streamlit app converts presentation-style videos into a numbered slide gall
 - **Two input modes**: process a YouTube URL or upload a local video file.
 - **Per-tab settings**: YouTube and local upload each have their own processing controls.
 - **Efficient frame sampling**: checks frames at configurable time intervals instead of reading every frame.
+- **Video time range selection**: process only a selected part of a video.
+- **Manual frame-area crop**: crop every sampled frame before slide detection and OCR, useful for fixed toolbars, camera overlays, borders, or side panels.
 - **Duplicate slide filtering**: uses perceptual hashing to keep visually distinct slide frames.
 - **Numbered slide gallery**: generated slides are displayed as numbered cards.
 - **Optional OCR**: run OCR during processing or skip it for faster slide extraction.
@@ -87,20 +89,24 @@ Then open the local Streamlit URL shown in the terminal.
 4. Choose an OCR method:
    - **Enhanced local Tesseract** for offline OCR.
    - **OCR.space cloud** for optional cloud OCR engines.
-5. Process the video.
-6. Review the generated numbered slide gallery.
-7. Run or re-run OCR for any slide if needed.
-8. Copy OCR text from individual slides.
-9. Download the generated PowerPoint.
+5. Download the YouTube video or load the local uploaded video.
+6. Use the preview frame to choose the video time range and visual crop.
+7. Extract slides from the loaded video.
+8. Review the generated numbered slide gallery.
+9. Run or re-run OCR for any slide if needed.
+10. Copy OCR text from individual slides.
+11. Download the generated PowerPoint.
 
 See [USAGE.md](USAGE.md) for the full workflow and setting details.
 
 ## How It Works
 
-The app first downloads or saves the input video to a temporary file. It reads video metadata such as FPS, frame count, and duration, then samples frames by timestamp. The number of sampled frames is controlled by **Sample every N seconds** and **Maximum frames to check**.
+The app first downloads or saves the input video to a persistent temporary file. After the video is loaded, it reads video metadata such as FPS, frame count, and duration, then shows a real preview frame. You can use that preview to choose the start/end time range and crop the frame area visually before slide extraction begins.
 
-After sampling, each frame is converted to a perceptual hash. Frames that are too visually similar to previous frames are skipped, leaving only unique slide-like frames.
+When extraction starts, the app samples frames by timestamp. The number of sampled frames is controlled by **Sample every N seconds**, **Maximum frames to check**, and the optional start/end time range.
 
-When OCR is enabled, the app crops each slide image to the likely presentation canvas before OCR. This avoids reading toolbar text, taskbar text, presenter bubbles, and other screen-recording noise. Local OCR uses Tesseract with multiple preprocessing and page-segmentation modes, then keeps the result with the strongest text score. Cloud OCR uses OCR.space when selected.
+If manual frame cropping is enabled, each sampled frame is cropped before duplicate detection. This means slide detection, OCR, gallery display, and PowerPoint export all use the cropped frame. After sampling and optional cropping, each frame is converted to a perceptual hash. Frames that are too visually similar to previous frames are skipped, leaving only unique slide-like frames.
+
+When OCR is enabled, the app can either auto-detect the likely presentation canvas before OCR or use the generated slide image as-is. Auto-detect helps avoid toolbar text, taskbar text, presenter bubbles, and other screen-recording noise. If you manually crop the video frame to the slide area, use the generated-slide OCR mode so OCR does not crop again. Local OCR uses Tesseract with multiple preprocessing and page-segmentation modes, then keeps the result with the strongest text score. Cloud OCR uses OCR.space when selected.
 
 The final results are stored in Streamlit session state so you can run per-slide OCR buttons without losing the generated slide gallery. A PowerPoint file is generated from the slide images and OCR text.
