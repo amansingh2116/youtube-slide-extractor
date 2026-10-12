@@ -13,6 +13,7 @@ import numpy as np
 import base64
 import zipfile
 import io
+import uuid
 import urllib.parse
 import urllib.request
 import urllib.error
@@ -43,6 +44,8 @@ DEFAULT_OCR_SETTINGS = {
     "crop_mode": "auto",
 }
 
+MAX_VIDEO_JOBS = 5
+
 
 # Function to download the video from YouTube
 def download_video(url, output_path='video.mp4'):
@@ -71,6 +74,66 @@ def save_uploaded_video(uploaded_file, output_path):
     with open(output_path, "wb") as video_file:
         video_file.write(uploaded_file.getbuffer())
     return output_path
+
+
+def get_video_jobs():
+    if "video_jobs" not in st.session_state:
+        st.session_state["video_jobs"] = []
+    return st.session_state["video_jobs"]
+
+
+def add_video_job(video_path, label, source_type):
+    jobs = get_video_jobs()
+    if len(jobs) >= MAX_VIDEO_JOBS:
+        st.error(f"You can load up to {MAX_VIDEO_JOBS} videos at a time.")
+        return False
+
+    jobs.append(
+        {
+            "id": uuid.uuid4().hex[:8],
+            "path": video_path,
+            "label": label,
+            "source_type": source_type,
+        }
+    )
+    return True
+
+
+def remove_video_job(job_id):
+    jobs = get_video_jobs()
+    removed_job = next((job for job in jobs if job["id"] == job_id), None)
+    if removed_job and os.path.exists(removed_job["path"]):
+        try:
+            os.remove(removed_job["path"])
+        except OSError:
+            pass
+
+    st.session_state["video_jobs"] = [job for job in jobs if job["id"] != job_id]
+
+    results_by_job = st.session_state.get("slide_results_by_job", {})
+    results_by_job.pop(job_id, None)
+    st.session_state["slide_results_by_job"] = results_by_job
+
+    if st.session_state.get("active_video_job_id") == job_id:
+        st.session_state.pop("active_video_job_id", None)
+
+
+def safe_file_label(label):
+    cleaned_label = re.sub(r"[^A-Za-z0-9_.-]+", "_", label).strip("_")
+    return cleaned_label[:80] or "video"
+
+
+def get_active_video_job():
+    jobs = get_video_jobs()
+    if not jobs:
+        return None
+
+    active_job_id = st.session_state.get("active_video_job_id")
+    if not active_job_id or all(job["id"] != active_job_id for job in jobs):
+        active_job_id = jobs[0]["id"]
+        st.session_state["active_video_job_id"] = active_job_id
+
+    return next((job for job in jobs if job["id"] == active_job_id), jobs[0])
 
 
 def get_video_metadata(cap):
@@ -611,8 +674,11 @@ def create_slide_images_zip(slide_texts, selected_indexes=None):
     return zip_buffer
 
 
-def store_slide_results(slide_texts, ppt_filename, use_ocr, ocr_settings):
-    st.session_state["slide_results"] = {
+def store_slide_results(job_id, slide_texts, ppt_filename, use_ocr, ocr_settings):
+    if "slide_results_by_job" not in st.session_state:
+        st.session_state["slide_results_by_job"] = {}
+
+    st.session_state["slide_results_by_job"][job_id] = {
         "slide_texts": slide_texts,
         "ppt_filename": ppt_filename,
         "use_ocr": use_ocr,
@@ -826,11 +892,12 @@ def render_video_crop_controls(prefix, video_path, ocr_settings):
     return start_time_seconds, end_time_seconds, frame_crop_settings, ocr_settings
 
 
-def render_results(slide_texts, ppt_filename, use_ocr, ocr_settings):
+def render_results(job_id, job_label, slide_texts, ppt_filename, use_ocr, ocr_settings):
     total_slides = len(slide_texts)
     slides_with_text = sum(1 for _, text in slide_texts if text)
+    file_label = safe_file_label(job_label)
 
-    st.success("Processing complete!")
+    st.success(f"Processing complete for {job_label}.")
 
     summary_col_1, summary_col_2, summary_col_3 = st.columns([1, 1, 1.4])
     summary_col_1.metric("Slides generated", total_slides)
@@ -845,12 +912,12 @@ def render_results(slide_texts, ppt_filename, use_ocr, ocr_settings):
         summary_col_3.download_button(
             "Download PowerPoint Presentation",
             f,
-            file_name="presentation.pptx",
+            file_name=f"{file_label}_presentation.pptx",
             use_container_width=True,
         )
 
     st.subheader("Generated Slides")
-    selection_prefix = f"slide_select_{total_slides}"
+    selection_prefix = f"slide_select_{job_id}_{total_slides}"
     selected_indexes = [
         index for index in range(total_slides)
         if st.session_state.get(f"{selection_prefix}_{index}", False)
@@ -871,7 +938,7 @@ def render_results(slide_texts, ppt_filename, use_ocr, ocr_settings):
     action_col_3.download_button(
         "Download all slide images",
         create_slide_images_zip(slide_texts),
-        file_name="all_slide_images.zip",
+        file_name=f"{file_label}_all_slide_images.zip",
         mime="application/zip",
         use_container_width=True,
     )
@@ -880,7 +947,7 @@ def render_results(slide_texts, ppt_filename, use_ocr, ocr_settings):
         action_col_4.download_button(
             f"Download selected images ({len(selected_indexes)})",
             create_slide_images_zip(slide_texts, selected_indexes),
-            file_name="selected_slide_images.zip",
+            file_name=f"{file_label}_selected_slide_images.zip",
             mime="application/zip",
             use_container_width=True,
         )
@@ -929,7 +996,7 @@ def render_results(slide_texts, ppt_filename, use_ocr, ocr_settings):
                     )
                     if st.button(
                         ocr_button_label,
-                        key=f"run_ocr_slide_{slide_number}",
+                        key=f"run_ocr_slide_{job_id}_{slide_number}",
                         use_container_width=True,
                     ):
                         with st.spinner(f"Running OCR for Slide {slide_number}..."):
@@ -938,12 +1005,12 @@ def render_results(slide_texts, ppt_filename, use_ocr, ocr_settings):
                         if extracted_text is None:
                             st.error("Tesseract OCR is not available on this machine.")
                         else:
-                            st.session_state["slide_results"]["slide_texts"][slide_index] = (
+                            st.session_state["slide_results_by_job"][job_id]["slide_texts"][slide_index] = (
                                 slide_filename,
                                 extracted_text,
                             )
-                            updated_slide_texts = st.session_state["slide_results"]["slide_texts"]
-                            st.session_state["slide_results"]["ppt_filename"] = create_ppt(
+                            updated_slide_texts = st.session_state["slide_results_by_job"][job_id]["slide_texts"]
+                            st.session_state["slide_results_by_job"][job_id]["ppt_filename"] = create_ppt(
                                 updated_slide_texts,
                                 use_ocr=use_ocr or any(
                                     item_text for _, item_text in updated_slide_texts
@@ -958,7 +1025,7 @@ def render_results(slide_texts, ppt_filename, use_ocr, ocr_settings):
                                 copy_text_button(
                                     text,
                                     f"Copy text from Slide {slide_number}",
-                                    f"copy_ocr_slide_{slide_number}",
+                                    f"copy_ocr_slide_{job_id}_{slide_number}",
                                 )
                             else:
                                 st.caption("No readable text was detected for this slide.")
@@ -969,127 +1036,145 @@ def main():
     st.set_page_config(page_title="Video Slide Extractor", layout="wide")
     inject_custom_styles()
     st.title("YouTube and Local Video Slide Extractor")
-    st.write("Enter a YouTube video link or upload a video file. This app extracts unique slides, runs OCR, and creates a PowerPoint presentation.")
+    st.write("Load up to five YouTube or local videos, then process them one at a time with crop, OCR, slide selection, and export tools.")
 
     youtube_tab, upload_tab = st.tabs(["YouTube URL", "Local video upload"])
 
     with youtube_tab:
-        (
-            sample_interval_seconds,
-            max_samples,
-            max_slides,
-            use_ocr,
-            ocr_settings,
-        ) = render_processing_controls("youtube")
-        youtube_url = st.text_input("YouTube Video URL", "")
-
-        if st.button("Download video", type="primary"):
-            if not youtube_url.strip():
-                st.error("Please enter a YouTube video URL.")
-                return
-
-            video_temp = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False)
-            video_temp.close()
-            os.remove(video_temp.name)
-
-            with st.spinner("Downloading video..."):
-                video_path = download_video(youtube_url.strip(), output_path=video_temp.name)
-                if not video_path:
-                    return
-
-            st.session_state["youtube_video"] = {
-                "path": video_path,
-                "source": youtube_url.strip(),
-            }
-            st.session_state.pop("slide_results", None)
-
-        youtube_video = st.session_state.get("youtube_video")
-        if youtube_video:
-            st.success("Video downloaded. Adjust the preview crop/time range, then extract slides.")
-            (
-                start_time_seconds,
-                end_time_seconds,
-                frame_crop_settings,
-                ocr_settings,
-            ) = render_video_crop_controls("youtube", youtube_video["path"], ocr_settings)
-
-            if st.button("Extract slides from downloaded video", type="primary"):
-                slide_texts, ppt_filename = process_video(
-                    youtube_video["path"],
-                    sample_interval_seconds,
-                    max_samples,
-                    max_slides,
-                    use_ocr,
-                    ocr_settings,
-                    start_time_seconds,
-                    end_time_seconds,
-                    frame_crop_settings,
-                )
-
-                if slide_texts and ppt_filename:
-                    store_slide_results(slide_texts, ppt_filename, use_ocr, ocr_settings)
-
-    with upload_tab:
-        (
-            sample_interval_seconds,
-            max_samples,
-            max_slides,
-            use_ocr,
-            ocr_settings,
-        ) = render_processing_controls("upload")
-        uploaded_file = st.file_uploader(
-            "Choose a video from your computer",
-            type=["mp4", "mov", "mkv", "avi", "webm"],
+        youtube_urls = st.text_area(
+            "YouTube Video URLs",
+            "",
+            help=f"Enter one URL per line. You can load up to {MAX_VIDEO_JOBS} videos total.",
         )
 
-        if st.button("Load uploaded video", type="primary"):
-            if uploaded_file is None:
-                st.error("Please choose a local video file first.")
+        if st.button("Download YouTube video(s)", type="primary"):
+            urls = [url.strip() for url in youtube_urls.splitlines() if url.strip()]
+            if not urls:
+                st.error("Please enter at least one YouTube video URL.")
                 return
 
-            extension = os.path.splitext(uploaded_file.name)[1] or ".mp4"
-            video_temp = tempfile.NamedTemporaryFile(suffix=extension, delete=False)
-            video_temp.close()
-            video_path = save_uploaded_video(uploaded_file, video_temp.name)
+            remaining_slots = MAX_VIDEO_JOBS - len(get_video_jobs())
+            if remaining_slots <= 0:
+                st.error(f"You already have {MAX_VIDEO_JOBS} videos loaded.")
+                return
 
-            st.session_state["upload_video"] = {
-                "path": video_path,
-                "source": uploaded_file.name,
-            }
-            st.session_state.pop("slide_results", None)
+            for url in urls[:remaining_slots]:
+                video_temp = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False)
+                video_temp.close()
+                os.remove(video_temp.name)
 
-        upload_video = st.session_state.get("upload_video")
-        if upload_video:
-            st.success("Video loaded. Adjust the preview crop/time range, then extract slides.")
-            (
-                start_time_seconds,
-                end_time_seconds,
-                frame_crop_settings,
-                ocr_settings,
-            ) = render_video_crop_controls("upload", upload_video["path"], ocr_settings)
+                with st.spinner(f"Downloading {url}..."):
+                    video_path = download_video(url, output_path=video_temp.name)
 
-            if st.button("Extract slides from loaded video", type="primary"):
-                slide_texts, ppt_filename = process_video(
-                    upload_video["path"],
-                    sample_interval_seconds,
-                    max_samples,
-                    max_slides,
-                    use_ocr,
-                    ocr_settings,
-                    start_time_seconds,
-                    end_time_seconds,
-                    frame_crop_settings,
-                )
+                if video_path:
+                    add_video_job(video_path, url, "YouTube")
 
-                if slide_texts and ppt_filename:
-                    store_slide_results(slide_texts, ppt_filename, use_ocr, ocr_settings)
+            if len(urls) > remaining_slots:
+                st.warning(f"Only loaded the first {remaining_slots} URL(s); the queue limit is {MAX_VIDEO_JOBS}.")
 
-    if "slide_results" in st.session_state:
+            if get_video_jobs():
+                st.session_state["active_video_job_id"] = get_video_jobs()[-1]["id"]
+
+    with upload_tab:
+        uploaded_files = st.file_uploader(
+            "Choose video files from your computer",
+            type=["mp4", "mov", "mkv", "avi", "webm"],
+            accept_multiple_files=True,
+        )
+
+        if st.button("Load uploaded video(s)", type="primary"):
+            if not uploaded_files:
+                st.error("Please choose at least one local video file first.")
+                return
+
+            remaining_slots = MAX_VIDEO_JOBS - len(get_video_jobs())
+            if remaining_slots <= 0:
+                st.error(f"You already have {MAX_VIDEO_JOBS} videos loaded.")
+                return
+
+            for uploaded_file in uploaded_files[:remaining_slots]:
+                extension = os.path.splitext(uploaded_file.name)[1] or ".mp4"
+                video_temp = tempfile.NamedTemporaryFile(suffix=extension, delete=False)
+                video_temp.close()
+                video_path = save_uploaded_video(uploaded_file, video_temp.name)
+                add_video_job(video_path, uploaded_file.name, "Local")
+
+            if len(uploaded_files) > remaining_slots:
+                st.warning(f"Only loaded the first {remaining_slots} file(s); the queue limit is {MAX_VIDEO_JOBS}.")
+
+            if get_video_jobs():
+                st.session_state["active_video_job_id"] = get_video_jobs()[-1]["id"]
+
+    jobs = get_video_jobs()
+    if not jobs:
+        st.info("Load one or more videos to start processing.")
+        return
+
+    st.divider()
+    st.subheader("Loaded Videos")
+
+    job_labels = {
+        job["id"]: f"{index + 1}. [{job['source_type']}] {job['label']}"
+        for index, job in enumerate(jobs)
+    }
+    active_job = get_active_video_job()
+    selected_job_id = st.selectbox(
+        "Choose a video to process",
+        [job["id"] for job in jobs],
+        format_func=lambda job_id: job_labels[job_id],
+        index=[job["id"] for job in jobs].index(active_job["id"]),
+        key="active_video_job_id",
+    )
+    active_job = next(job for job in jobs if job["id"] == selected_job_id)
+
+    queue_col_1, queue_col_2 = st.columns([1, 3])
+    if queue_col_1.button("Remove selected video", use_container_width=True):
+        remove_video_job(active_job["id"])
+        st.rerun()
+    queue_col_2.caption(f"{len(jobs)} of {MAX_VIDEO_JOBS} videos loaded.")
+
+    job_prefix = f"job_{active_job['id']}"
+    (
+        sample_interval_seconds,
+        max_samples,
+        max_slides,
+        use_ocr,
+        ocr_settings,
+    ) = render_processing_controls(job_prefix)
+
+    (
+        start_time_seconds,
+        end_time_seconds,
+        frame_crop_settings,
+        ocr_settings,
+    ) = render_video_crop_controls(job_prefix, active_job["path"], ocr_settings)
+
+    if st.button("Extract slides from selected video", type="primary"):
+        slide_texts, ppt_filename = process_video(
+            active_job["path"],
+            sample_interval_seconds,
+            max_samples,
+            max_slides,
+            use_ocr,
+            ocr_settings,
+            start_time_seconds,
+            end_time_seconds,
+            frame_crop_settings,
+        )
+
+        if slide_texts and ppt_filename:
+            store_slide_results(active_job["id"], slide_texts, ppt_filename, use_ocr, ocr_settings)
+
+    results_by_job = st.session_state.get("slide_results_by_job", {})
+    active_results = results_by_job.get(active_job["id"])
+    if active_results:
         render_results(
-            st.session_state["slide_results"]["slide_texts"],
-            st.session_state["slide_results"]["ppt_filename"],
-            st.session_state["slide_results"]["use_ocr"],
-            st.session_state["slide_results"].get("ocr_settings", DEFAULT_OCR_SETTINGS),
+            active_job["id"],
+            active_job["label"],
+            active_results["slide_texts"],
+            active_results["ppt_filename"],
+            active_results["use_ocr"],
+            active_results.get("ocr_settings", DEFAULT_OCR_SETTINGS),
         )
 
 if __name__ == "__main__":

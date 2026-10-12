@@ -12,37 +12,51 @@ streamlit run app.py
 
 Open the local URL Streamlit prints in the terminal.
 
-## Input Modes
+## Input Modes and Video Queue
+
+The app can load up to five videos at a time. Videos can come from YouTube, local uploads, or a mix of both.
+
+After loading videos, use **Loaded Videos** to choose which video to work on. Each selected video gets its own processing settings, crop preview, OCR settings, and generated results.
 
 ### YouTube URL
 
 Use this tab when the source video is on YouTube.
 
 1. Open the **YouTube URL** tab.
-2. Configure the processing and OCR settings on the page.
-3. Paste a complete YouTube URL.
-4. Click **Download video**.
-5. After the video loads, use the preview frame to set the time range and crop.
-6. Click **Extract slides from downloaded video**.
+2. Paste one or more complete YouTube URLs, one per line.
+3. Click **Download YouTube video(s)**.
+4. The downloaded videos are added to **Loaded Videos**.
+5. Choose a loaded video and process it.
 
-The app downloads the video with `yt-dlp`, saves it temporarily, then shows preview controls before processing.
+The app downloads each video with `yt-dlp`, saves it temporarily, and adds it to the queue.
 
 ### Local Video Upload
 
 Use this tab when the video file is already on your computer.
 
 1. Open the **Local video upload** tab.
-2. Configure the processing and OCR settings on the page.
-3. Choose a video file from your computer.
-4. Click **Load uploaded video**.
-5. After the video loads, use the preview frame to set the time range and crop.
-6. Click **Extract slides from loaded video**.
+2. Choose one or more video files from your computer.
+3. Click **Load uploaded video(s)**.
+4. The uploaded videos are added to **Loaded Videos**.
+5. Choose a loaded video and process it.
 
 Supported upload extensions are `mp4`, `mov`, `mkv`, `avi`, and `webm`.
 
+### Loaded Videos
+
+The **Loaded Videos** section appears after at least one video is loaded.
+
+Use it to:
+
+- choose the active video
+- remove the selected video from the queue
+- see how many of the five slots are currently used
+
+To process multiple videos, choose the first video, configure its settings, extract slides, then choose the next video and repeat.
+
 ## Processing Settings
 
-Each input tab has its own settings.
+Each loaded video has its own settings. Switching between loaded videos keeps those settings separate.
 
 ### Sample Every N Seconds
 
@@ -74,7 +88,7 @@ When disabled, the app extracts the slides faster. You can still run OCR later o
 
 ## Advanced Crop and Time Range
 
-These controls appear after a YouTube video is downloaded or a local video is loaded. They use a real frame from that video, so you can visually choose the crop area before extraction starts.
+These controls appear after you choose a loaded video. They use a real frame from that selected video, so you can visually choose the crop area before extraction starts.
 
 ### Start and End Time
 
